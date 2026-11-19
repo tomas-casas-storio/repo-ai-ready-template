@@ -1,0 +1,80 @@
+# The gate. Same command humans and agents run locally: `make verify`.
+# TODO(golden-path): replace job bodies with the org's reusable AI-SDLC workflows when available.
+# Pin third-party actions to full commit SHAs before production use.
+name: verify
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: verify-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+      - run: make setup
+      - run: make verify
+
+  guard-tests:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Detect removed or skipped tests
+        id: guard
+        continue-on-error: true
+        run: scripts/guard-tests.sh origin/${{ github.base_ref }}
+      - name: Allow only with human approval
+        if: steps.guard.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+        run: |
+          # Label alone is not enough (the agent can label). Require an approving review
+          # from a human other than the author on the current head.
+          echo "$LABELS" | grep -q '"tests-removed-approved"' || { echo "::error::Tests weakened, no approval label."; exit 1; }
+          approvers=$(gh api "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/reviews" \
+            -q "[.[] | select(.state==\"APPROVED\" and .user.type==\"User\" and .user.login!=\"$AUTHOR\" and .commit_id==\"${{ github.event.pull_request.head.sha }}\")] | length")
+          [ "$approvers" -gt 0 ] || { echo "::error::Tests weakened; needs a human approval on the current commit."; exit 1; }
+
+  # Agent fix-loop limit: after MAX_FIX_ROUNDS failed gate runs on a PR, hand off to a human.
+  loop-limit:
+    if: failure() && github.event_name == 'pull_request'
+    needs: [verify, guard-tests]
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      pull-requests: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      MAX_FIX_ROUNDS: 2
+    steps:
+      - name: Count failed rounds and escalate
+        run: |
+          failures=$(gh api "repos/${{ github.repository }}/actions/workflows/verify.yml/runs?event=pull_request&branch=${{ github.head_ref }}&per_page=100" \
+            -q '[.workflow_runs[] | select(.conclusion=="failure")] | length')
+          # The current run is still in progress, so count it too.
+          failures=$((failures + 1))
+          echo "failed rounds: $failures (limit: initial + $MAX_FIX_ROUNDS fixes)"
+          if [ "$failures" -gt "$MAX_FIX_ROUNDS" ]; then
+            gh pr edit ${{ github.event.pull_request.number }} -R ${{ github.repository }} --add-label needs-human
+            gh pr merge ${{ github.event.pull_request.number }} -R ${{ github.repository }} --disable-auto || true
+            gh pr comment ${{ github.event.pull_request.number }} -R ${{ github.repository }} \
+              --body "Gate failed $failures times. Fix-loop limit reached: handing off to a human (label \`needs-human\`). Agent: stop and summarise blockers in the PR description."
+          fi
