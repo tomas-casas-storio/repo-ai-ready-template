@@ -1,0 +1,29 @@
+# Globs (bash [[ == ]] semantics; '*' matches across '/').
+# Any change touching these is HIGH risk: never auto-merged, needs CODEOWNER review.
+# Keep in sync with .github/CODEOWNERS.
+
+# The controls themselves — an agent must never be able to relax its own limits.
+.github/*
+scripts/*
+Makefile
+AGENTS.md
+CLAUDE.md
+docs/decisions/*
+
+# Gate configuration — lowering thresholds or rules is weakening the gate.
+eslint.config.*
+vitest.config.*
+tsconfig*.json
+.prettierrc*
+.prettierignore
+
+# Dependencies and environment.
+package.json
+pnpm-lock.yaml
+.devcontainer/*
+.env.example
+
+# Domain-sensitive areas — add yours (auth, payments, migrations, infra, contracts).
+# src/auth/*
+# migrations/*
+# infra/*
