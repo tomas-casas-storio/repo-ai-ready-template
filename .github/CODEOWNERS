@@ -1,0 +1,18 @@
+# Human review is required ONLY for these paths (ruleset: require_code_owner_review).
+# Everything else can merge without a human when spec-approved, low risk and green.
+# Keep in sync with .github/risk/high-risk-paths.
+# The agent identity must NEVER appear here.
+# TODO: replace @your-org/repo-maintainers with the real team.
+
+/.github/              @your-org/repo-maintainers
+/scripts/              @your-org/repo-maintainers
+/Makefile              @your-org/repo-maintainers
+/AGENTS.md             @your-org/repo-maintainers
+/CLAUDE.md             @your-org/repo-maintainers
+/docs/decisions/       @your-org/repo-maintainers
+/eslint.config.*       @your-org/repo-maintainers
+/vitest.config.*       @your-org/repo-maintainers
+/tsconfig*.json        @your-org/repo-maintainers
+/package.json          @your-org/repo-maintainers
+/pnpm-lock.yaml        @your-org/repo-maintainers
+/.devcontainer/        @your-org/repo-maintainers
