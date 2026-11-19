@@ -75,7 +75,8 @@ jobs:
 
   auto-merge:
     needs: [spec-gate, risk-gate]
-    if: github.event_name == 'pull_request' && !github.event.pull_request.draft
+    # Also on pull_request_review: a human approval on a high-risk PR must re-enable auto-merge.
+    if: ${{ !github.event.pull_request.draft }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
