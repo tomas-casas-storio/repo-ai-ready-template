@@ -1,0 +1,87 @@
+# Spec gate + risk gate + auto-merge. These decide whether a PR may merge without a human.
+#   spec-gate : PR references a Jira ticket whose spec is approved (fails closed).
+#   risk-gate : low risk passes; high risk passes only with a human approval on the head commit.
+#   auto-merge: enabled on every PR; GitHub merges only once ALL required checks/reviews pass,
+#               so in practice only low-risk, spec-approved, green PRs merge unattended.
+name: governance
+on:
+  pull_request:
+    types:
+      [
+        opened,
+        edited,
+        synchronize,
+        reopened,
+        labeled,
+        unlabeled,
+        ready_for_review,
+      ]
+  pull_request_review:
+    types: [submitted, dismissed]
+permissions:
+  contents: read
+
+jobs:
+  spec-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+      - name: Check Jira spec approval
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BRANCH: ${{ github.event.pull_request.head.ref }}
+          JIRA_BASE_URL: ${{ vars.JIRA_BASE_URL }}
+          JIRA_APPROVED_STATUSES: ${{ vars.JIRA_APPROVED_STATUSES }}
+          JIRA_USER: ${{ secrets.JIRA_USER }}
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+        run: scripts/check-spec.sh
+
+  risk-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: write
+    outputs:
+      tier: ${{ steps.tier.outputs.tier }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PR: ${{ github.event.pull_request.number }}
+      LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Compute tier (labels can only raise it)
+        id: tier
+        run: |
+          tier=$(scripts/risk-tier.sh origin/${{ github.base_ref }})
+          if echo "$LABELS" | grep -qE '"(risk:high|needs-human)"'; then tier=high; fi
+          echo "tier=$tier" >> "$GITHUB_OUTPUT"
+          echo "### Risk tier: $tier" >> "$GITHUB_STEP_SUMMARY"
+          gh pr edit "$PR" -R ${{ github.repository }} --remove-label risk:low --remove-label risk:computed-high 2>/dev/null || true
+          if [ "$tier" = low ]; then gh pr edit "$PR" -R ${{ github.repository }} --add-label risk:low; \
+          else gh pr edit "$PR" -R ${{ github.repository }} --add-label risk:computed-high; fi
+      - name: High risk requires human approval on head commit
+        if: steps.tier.outputs.tier == 'high'
+        env:
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          n=$(gh api "repos/${{ github.repository }}/pulls/$PR/reviews" \
+            -q "[.[] | select(.state==\"APPROVED\" and .user.type==\"User\" and .user.login!=\"$AUTHOR\" and .commit_id==\"$HEAD\")] | length")
+          [ "$n" -gt 0 ] || { echo "::error::High-risk change: waiting for a human approval."; exit 1; }
+
+  auto-merge:
+    needs: [spec-gate, risk-gate]
+    if: github.event_name == 'pull_request' && !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Enable auto-merge (waits for all required checks)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh pr merge ${{ github.event.pull_request.number }} -R ${{ github.repository }} --auto --squash
